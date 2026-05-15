@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 360px;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      background: linear-gradient(135deg, #0f0c29 0%, #1a1a2e 50%, #16213e 100%);
+      color: #e0e0e0;
+      min-height: 400px;
+    }
+    h3 {
+      font-size: 16px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .section {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(124,58,237,0.2);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      backdrop-filter: blur(10px);
+    }
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: #8b949e;
+      margin-bottom: 8px;
+      letter-spacing: 0.5px;
+    }
+    label {
+      display: block;
+      margin: 8px 0 4px;
+      font-size: 13px;
+      font-weight: 500;
+      color: #c9d1d9;
+    }
+    input, select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid rgba(124,58,237,0.3);
+      border-radius: 6px;
+      font-size: 13px;
+      background: rgba(13,17,23,0.8);
+      color: #e0e0e0;
+      transition: border-color 0.2s;
+    }
+    input:focus, select:focus {
+      outline: none;
+      border-color: #7c3aed;
+      background: rgba(13,17,23,0.95);
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+    }
+    .row > * { flex: 1; }
+    button {
+      margin-top: 8px;
+      width: 100%;
+      padding: 10px;
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    button:hover { opacity: 0.85; transform: translateY(-1px); }
+    button:active { opacity: 0.9; transform: translateY(0); }
+    .saved {
+      color: #3fb950;
+      font-size: 13px;
+      margin-top: 8px;
+      display: none;
+      text-align: center;
+    }
+    .hint {
+      font-size: 11px;
+      color: #8b949e;
+      margin-top: 4px;
+    }
+    .footer {
+      text-align: center;
+      font-size: 11px;
+      color: #6b7280;
+      margin-top: 12px;
+    }
+    .api-link {
+      color: #10b981;
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .api-link:hover { text-decoration: underline; color: #34d399; }
+    .ad-section {
+      background: linear-gradient(135deg, rgba(2,132,199,0.1) 0%, rgba(3,105,161,0.1) 100%);
+      border: 1px solid rgba(56,189,248,0.3);
+    }
+    .ad-card {
+      display: block;
+      text-decoration: none;
+      color: inherit;
+      padding: 4px 0;
+    }
+    .ad-card:hover .ad-title { color: #38bdf8; }
+    .ad-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #0ea5e9;
+      transition: color 0.2s;
+    }
+    .ad-desc {
+      font-size: 11px;
+      color: #94a3b8;
+      margin-top: 4px;
+      line-height: 1.5;
+    }
+    .ad-btn {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 4px 12px;
+      background: linear-gradient(135deg, #0284c7, #0369a1);
+      color: #fff;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .resize-hint {
+      position: absolute;
+      bottom: 4px;
+      right: 8px;
+      font-size: 10px;
+      color: #4b5563;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <h3>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60" width="80" height="24">
+      <defs>
+        <linearGradient id="p-g" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#00f5ff"/>
+          <stop offset="50%" style="stop-color:#7c3aed"/>
+          <stop offset="100%" style="stop-color:#f472b6"/>
+        </linearGradient>
+      </defs>
+      <path d="M8 12 L28 12 L28 18 L14 18 L14 26 L26 26 L26 32 L14 32 L14 48 L8 48 Z" fill="url(#p-g)"/>
+      <path d="M32 12 L38 12 L38 42 L44 42 L44 48 L32 48 Z" fill="url(#p-g)"/>
+      <circle cx="52" cy="30" r="16" fill="none" stroke="url(#p-g)" stroke-width="2"/>
+      <path d="M46 30 L52 24 L58 30 L52 36 Z" fill="url(#p-g)"/>
+      <text x="72" y="38" font-family="'PingFang SC','Microsoft YaHei',sans-serif" font-size="22" font-weight="700" fill="url(#p-g)">枫璇科技</text>
+    </svg>
+  </h3>
+
+  <div class="section">
+    <div class="section-title">AI 提供商</div>
+
+    <label>AI 提供商</label>
+    <select id="provider">
+      <option value="openai">OpenAI 兼容接口（推荐）</option>
+      <option value="anthropic">Anthropic Claude</option>
+    </select>
+
+    <label>API Key</label>
+    <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
+    <div class="hint">
+      <a href="https://newapi.doclaw.cn/console/token" target="_blank" class="api-link">🔑 获取 API Key</a>
+      · 存储在本地，仅用于本扩展
+    </div>
+
+    <label>Model</label>
+    <div style="display:flex;gap:6px;align-items:stretch;">
+      <select id="model" style="flex:1;">
+        <option value="">— 请选择模型 —</option>
+      </select>
+      <button id="refreshModels" style="flex:0 0 auto;width:auto;margin-top:0;padding:8px 10px;font-size:12px;background:#6c757d;white-space:nowrap;">🔄</button>
+    </div>
+    <div class="hint" id="modelStatus">切换提供商或输入 API Key 后点击刷新</div>
+
+    <label>API 地址</label>
+    <input type="url" id="aiBaseUrl" placeholder="https://newapi.doclaw.cn/v1" autocomplete="off">
+    <div class="hint">留空使用默认地址</div>
+  </div>
+
+  <div class="section ad-section">
+    <div class="section-title">🚀 推荐服务</div>
+    <a href="https://newapi.doclaw.cn" target="_blank" class="ad-card">
+      <div class="ad-title">newapi.doclaw.cn</div>
+      <div class="ad-desc">AI 模型中转站 · 一站式接入主流大模型<br>OpenAI / Claude / Gemini 全兼容</div>
+      <div class="ad-btn">立即注册 →</div>
+    </a>
+  </div>
+
+  <div class="section">
+    <div class="section-title">刷题设置</div>
+
+    <div class="row">
+      <div>
+        <label>编程语言</label>
+        <select id="language">
+          <option value="C (gcc)">C (gcc)</option>
+          <option value="C++ (g++)">C++ (g++)</option>
+          <option value="Python (python3)">Python (python3)</option>
+        </select>
+      </div>
+      <div>
+        <label>最大重试</label>
+        <input type="number" id="maxRetries" value="5" min="1" max="20">
+      </div>
+    </div>
+
+    <label>每步延迟 (ms)</label>
+    <input type="number" id="stepDelay" value="1000" min="500" max="5000" step="100">
+    <div class="hint">延迟越大越不容易被检测</div>
+  </div>
+
+  <button id="save">💾 保存设置</button>
+  <div class="saved" id="saved">✅ 设置已保存</div>
+  <div class="footer">枫璇科技 · PTA Auto Solver v3.0 Commercial</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
