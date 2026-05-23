@@ -1,5 +1,5 @@
 // ============================================================
-// PTA Auto Solver v3.0 - Content Script
+// PTA Auto Solver v3.0.1 - Content Script
 // ============================================================
 
 let isRunning = false;
@@ -10,6 +10,16 @@ let hintMode = false;
 let streamBuffer = '';
 let streamResolve = null;
 let streamPromise = null;
+
+const AUTO_SOLVE_SESSION_KEY = 'pta-auto-solve';
+const AUTO_SOLVE_TARGET_KEY = 'pta-auto-solve-target';
+const AUTO_SOLVE_RUNNING = 'running';
+const AUTO_SOLVE_NAVIGATING = 'solver-navigation';
+const SUBMIT_RESULT_TIMEOUT_MS = 180000;
+const STATUS_SYNC_TIMEOUT_MS = 90000;
+const PROBLEM_LIST_TIMEOUT_MS = 15000;
+const RESULT_POLL_INTERVAL_MS = 1000;
+const TEST_RESULT_WAIT_MS = 10000;
 
 function checkCancelled() {
   if (!isRunning) throw new Error('任务已停止');
@@ -162,14 +172,14 @@ async function waitForTestResult() {
   await sleep(1500);
   const runBtn = findButton('运行测试');
   if (runBtn) runBtn.click();
-  await sleep(5000);
+  await sleep(TEST_RESULT_WAIT_MS);
 
   const answerInput = document.querySelector('[class*="answerInput"]');
   if (!answerInput) return { error: 'no answerInput' };
 
   const readOnlyEditors = answerInput.querySelectorAll('[class*="readOnly"]');
-  const actual = readOnlyEditors[0]?.querySelector('.cm-content')?.textContent?.trim() || '';
-  const expected = readOnlyEditors[1]?.querySelector('.cm-content')?.textContent?.trim() || '';
+  const actual = readOnlyEditors[0]?.querySelector('.cm-content')?.textContent || '';
+  const expected = readOnlyEditors[1]?.querySelector('.cm-content')?.textContent || '';
 
   if (!actual && !expected) {
     return { error: 'no test output' };
@@ -191,15 +201,16 @@ function checkCompilerOutput() {
   return { hasError: output !== '' && output !== '空', output };
 }
 
-async function submitAndWaitResult() {
+async function submitAndWaitResult(timeoutMs = SUBMIT_RESULT_TIMEOUT_MS) {
   clickButton('提交本题作答');
 
   const pendingStatuses = ['等待评测', '评测中', '排队中'];
   const finalStatuses = ['答案正确', '答案错误', '编译错误', '运行超时',
     '段错误', '内存超限', '输出超限', '格式错误', '部分正确'];
+  const deadline = Date.now() + timeoutMs;
 
-  for (let i = 0; i < 60; i++) {
-    await sleep(1000);
+  while (Date.now() < deadline) {
+    await sleep(RESULT_POLL_INTERVAL_MS);
     const modal = document.querySelector('.modal_I0D4Y, [class*="pc-modal"]');
     if (!modal || modal.offsetHeight === 0) continue;
 
@@ -211,7 +222,7 @@ async function submitAndWaitResult() {
       continue;
     }
 
-    if (!finalStatuses.includes(status) && i < 59) {
+    if (!finalStatuses.includes(status) && Date.now() < deadline) {
       continue;
     }
 
@@ -255,49 +266,38 @@ async function submitAndWaitResult() {
   }
   return { error: 'submit modal timeout' };
 }
-
 // ============================================================
 // Navigation
 // ============================================================
+function parseProblemStatusLink(a) {
+  const params = new URLSearchParams(a.href.split('?')[1] || '');
+  const problemId = params.get('problemSetProblemId');
+  if (!problemId || problemId === 'null') return null;
+
+  const rect = a.querySelector('[class*="problemStatusRect"]');
+  let status = 'no_answer';
+  if (rect) {
+    const cn = rect.className;
+    if (cn.includes('PROBLEM_ACCEPTED')) status = 'accepted';
+    else if (cn.includes('PROBLEM_WRONG_ANSWER')) status = 'wrong';
+    else if (cn.includes('PROBLEM_SUBMITTED')) status = 'submitted';
+  }
+
+  return {
+    num: a.textContent.trim(),
+    problemId,
+    status,
+    isActive: a.classList.contains('active'),
+  };
+}
+
 function getProblemStatuses() {
   const links = Array.from(document.querySelectorAll('.px-2.grid a[href*="problemSetProblemId"]'));
-  if (links.length === 0) {
-    return Array.from(document.querySelectorAll('a[href*="problemSetProblemId"]'))
-      .map(a => {
-        const params = new URLSearchParams(a.href.split('?')[1]);
-        const rect = a.querySelector('[class*="problemStatusRect"]');
-        let status = 'no_answer';
-        if (rect) {
-          const cn = rect.className;
-          if (cn.includes('PROBLEM_ACCEPTED')) status = 'accepted';
-          else if (cn.includes('PROBLEM_WRONG_ANSWER')) status = 'wrong';
-          else if (cn.includes('PROBLEM_SUBMITTED')) status = 'submitted';
-        }
-        return {
-          num: a.textContent.trim(),
-          problemId: params.get('problemSetProblemId'),
-          status,
-          isActive: a.classList.contains('active'),
-        };
-      });
-  }
-  return links.map(a => {
-    const params = new URLSearchParams(a.href.split('?')[1]);
-    const rect = a.querySelector('[class*="problemStatusRect"]');
-    let status = 'no_answer';
-    if (rect) {
-      const cn = rect.className;
-      if (cn.includes('PROBLEM_ACCEPTED')) status = 'accepted';
-      else if (cn.includes('PROBLEM_WRONG_ANSWER')) status = 'wrong';
-      else if (cn.includes('PROBLEM_SUBMITTED')) status = 'submitted';
-    }
-    return {
-      num: a.textContent.trim(),
-      problemId: params.get('problemSetProblemId'),
-      status,
-      isActive: a.classList.contains('active'),
-    };
-  });
+  const candidates = links.length > 0
+    ? links
+    : Array.from(document.querySelectorAll('a[href*="problemSetProblemId"]'));
+
+  return candidates.map(parseProblemStatusLink).filter(Boolean);
 }
 
 function clickProblemById(problemId) {
@@ -314,26 +314,96 @@ function getCurrentProblemIndex() {
   return active ? active.textContent.trim() : null;
 }
 
-function getUnACProblems() {
-  return getProblemStatuses().filter(p => p.status !== 'accepted');
+function getUnACProblems(problems = getProblemStatuses()) {
+  return problems.filter(p => p.status !== 'accepted');
 }
 
-function findNextUnACProblem() {
-  const problems = getProblemStatuses();
+async function waitForProblemStatuses(timeout = PROBLEM_LIST_TIMEOUT_MS) {
+  const deadline = Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    const problems = getProblemStatuses();
+    if (problems.length > 0) return problems;
+    await sleep(RESULT_POLL_INTERVAL_MS);
+  }
+
+  return [];
+}
+
+function findNextUnACProblem(problems = getProblemStatuses()) {
   const activeIndex = problems.findIndex(p => p.isActive);
-  for (let i = activeIndex + 1; i < problems.length; i++) {
+  const startIndex = activeIndex >= 0 ? activeIndex + 1 : 0;
+
+  for (let i = startIndex; i < problems.length; i++) {
     if (problems[i].status !== 'accepted') return problems[i];
   }
-  for (let i = 0; i < activeIndex; i++) {
+  for (let i = 0; i < startIndex - 1; i++) {
     if (problems[i].status !== 'accepted') return problems[i];
   }
   return null;
 }
 
+function findNextUnACProblemAfter(problemId, problems = getProblemStatuses()) {
+  const currentIndex = problems.findIndex(p => p.problemId === problemId);
+  const startIndex = currentIndex >= 0 ? currentIndex + 1 : 0;
+
+  for (let i = startIndex; i < problems.length; i++) {
+    if (problems[i].status !== 'accepted' && problems[i].problemId !== problemId) return problems[i];
+  }
+  for (let i = 0; i < startIndex - 1; i++) {
+    if (problems[i].status !== 'accepted' && problems[i].problemId !== problemId) return problems[i];
+  }
+  return null;
+}
+
+async function skipCurrentProblem(problemId) {
+  const problems = await waitForProblemStatuses();
+  const nextProblem = findNextUnACProblemAfter(problemId, problems);
+
+  if (nextProblem) {
+    updateStatus(`📌 跳过当前题，跳转至题目 ${nextProblem.num}...`);
+    markAutoSolveNavigation(nextProblem.problemId);
+    goToProblem(nextProblem.problemId);
+    return true;
+  }
+
+  updateStatus('🎉 全部题目已完成！');
+  clearAutoSolveNavigation();
+  isRunning = false;
+  return true;
+}
+
 function goToProblem(problemId) {
+  if (!problemId || problemId === 'null') {
+    updateStatus('⚠️ 未找到有效的下一题 ID，已停止跳转');
+    return false;
+  }
+
   const url = new URL(window.location.href);
   url.searchParams.set('problemSetProblemId', problemId);
   window.location.href = url.toString();
+  return true;
+}
+
+function getCurrentProblemIdFromUrl() {
+  return new URLSearchParams(window.location.search).get('problemSetProblemId');
+}
+
+function markAutoSolveRunning() {
+  sessionStorage.setItem(AUTO_SOLVE_SESSION_KEY, AUTO_SOLVE_RUNNING);
+}
+
+function markAutoSolveNavigation(problemId) {
+  if (!problemId || problemId === 'null') return false;
+
+  sessionStorage.setItem(AUTO_SOLVE_SESSION_KEY, AUTO_SOLVE_NAVIGATING);
+  sessionStorage.setItem(AUTO_SOLVE_TARGET_KEY, problemId);
+  return true;
+}
+
+function clearAutoSolveNavigation() {
+  sessionStorage.removeItem(AUTO_SOLVE_SESSION_KEY);
+  sessionStorage.removeItem(AUTO_SOLVE_TARGET_KEY);
 }
 
 function waitForEditor(timeout = 15000) {
@@ -347,21 +417,58 @@ function waitForEditor(timeout = 15000) {
   });
 }
 
-function waitForStatusChange(problemId, timeout = 30000) {
+function waitForStatus(problemId, expectedStatus, timeout = STATUS_SYNC_TIMEOUT_MS) {
   return new Promise((resolve) => {
-    const observer = new MutationObserver(() => {
-      const problems = getProblemStatuses();
-      const current = problems.find(p => p.problemId === problemId);
-      if (current && current.status !== 'submitted' && current.status !== 'wrong') {
-        observer.disconnect();
-        resolve(current.status);
+    let settled = false;
+    let observer = null;
+
+    const finish = (status) => {
+      if (settled) return;
+      settled = true;
+      if (observer) observer.disconnect();
+      resolve(status);
+    };
+
+    const check = () => {
+      const current = getProblemStatuses().find(p => p.problemId === problemId);
+      if (current && current.status === expectedStatus) {
+        finish(current.status);
       }
-    });
+    };
+
+    observer = new MutationObserver(check);
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
-    setTimeout(() => { observer.disconnect(); resolve(null); }, timeout);
+    check();
+    setTimeout(() => finish(null), timeout);
   });
 }
 
+function waitForStatusChange(problemId, timeout = STATUS_SYNC_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    const initial = getProblemStatuses().find(p => p.problemId === problemId)?.status || null;
+    let settled = false;
+    let observer = null;
+
+    const finish = (status) => {
+      if (settled) return;
+      settled = true;
+      if (observer) observer.disconnect();
+      resolve(status);
+    };
+
+    const check = () => {
+      const current = getProblemStatuses().find(p => p.problemId === problemId);
+      if (current && current.status !== initial) {
+        finish(current.status);
+      }
+    };
+
+    observer = new MutationObserver(check);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+    check();
+    setTimeout(() => finish(null), timeout);
+  });
+}
 function showUnACProblems() {
   const unAC = getUnACProblems();
   const el = document.getElementById('pta-unac');
@@ -524,27 +631,42 @@ async function autoSolve() {
 
   showUnACProblems();
 
-  const urlParams = new URLSearchParams(window.location.search);
-  const currentUrlProblemId = urlParams.get('problemSetProblemId');
-
   while (isRunning) {
     try {
-      const unAC = getUnACProblems();
+      const problems = await waitForProblemStatuses();
+      if (problems.length === 0) {
+        updateStatus('⚠️ 题目列表加载超时，稍后重试');
+        await sleep(2000);
+        continue;
+      }
+
+      const unAC = getUnACProblems(problems);
       if (unAC.length === 0) {
         updateStatus('🎉 全部题目已完成！');
-        sessionStorage.removeItem('pta-auto-solve');
+        clearAutoSolveNavigation();
         isRunning = false;
         break;
       }
 
-      const nextProblem = unAC[0];
-      
+      const currentUrlProblemId = getCurrentProblemIdFromUrl();
+      const activeProblem = problems.find(p => p.problemId === currentUrlProblemId);
+      const nextProblem = activeProblem && activeProblem.status !== 'accepted'
+        ? activeProblem
+        : findNextUnACProblem(problems) || unAC[0];
+
+      if (!nextProblem) {
+        updateStatus('🎉 全部题目已完成！');
+        clearAutoSolveNavigation();
+        isRunning = false;
+        break;
+      }
+
       if (currentProblemId === null) {
         if (currentUrlProblemId === nextProblem.problemId) {
           currentProblemId = nextProblem.problemId;
         } else {
           updateStatus(`📌 跳转至题目 ${nextProblem.num}...`);
-          sessionStorage.setItem('pta-auto-solve', 'running');
+          markAutoSolveNavigation(nextProblem.problemId);
           goToProblem(nextProblem.problemId);
           return;
         }
@@ -552,7 +674,7 @@ async function autoSolve() {
 
       if (nextProblem.problemId !== currentProblemId) {
         updateStatus(`📌 跳转至题目 ${nextProblem.num}...`);
-        sessionStorage.setItem('pta-auto-solve', 'running');
+        markAutoSolveNavigation(nextProblem.problemId);
         currentProblemId = nextProblem.problemId;
         currentRetry = 0;
         code = null;
@@ -596,51 +718,32 @@ async function autoSolve() {
       await sleep(stepDelay);
       checkCancelled();
 
-      updateStatus('🔍 检查编译输出...');
-      const compiler = checkCompilerOutput();
-      if (compiler.hasError) {
-        currentRetry++;
-        updateStatus(`🔧 编译错误，第 ${currentRetry}/${maxRetries} 次重试`);
-        updateRetryCount(currentRetry);
-        if (currentRetry >= maxRetries) {
-          updateStatus(`❌ 题目 ${getCurrentProblemIndex()} 重试用尽，跳过`);
-          currentProblemId = null;
-          currentRetry = 0;
-          code = null;
-          problem = null;
-          showUnACProblems();
-          continue;
-        }
-        updateStatus('🤖 AI 修复代码中...');
-        clearCodeDisplay();
-        const aiResult = await requestAIStream('debug', { code, problem, error: compiler.output, errorType: 'compile' });
-        if (aiResult.error) throw new Error(aiResult.error);
-        code = aiResult.code;
-        checkCancelled();
-        apiRetry = 0;
-        continue;
-      }
-
       updateStatus('🧪 运行测试...');
       const testResult = await waitForTestResult();
       checkCancelled();
 
       if (testResult.error) {
         updateStatus(`⚠️ 测试异常: ${testResult.error}`);
+        const compiler = checkCompilerOutput();
         currentRetry++;
         updateRetryCount(currentRetry);
         if (currentRetry >= maxRetries) {
           updateStatus(`❌ 题目 ${getCurrentProblemIndex()} 重试用尽，跳过`);
+          const skipped = await skipCurrentProblem(currentProblemId);
           currentProblemId = null;
           currentRetry = 0;
           code = null;
           problem = null;
           showUnACProblems();
+          if (skipped) return;
           continue;
         }
         updateStatus('🤖 AI 修复代码中...');
         clearCodeDisplay();
-        const aiResult = await requestAIStream('debug', { code, problem, testResult, errorType: 'test_error' });
+        const debugPayload = compiler.hasError
+          ? { code, problem, error: compiler.output, errorType: 'compile' }
+          : { code, problem, testResult, errorType: 'test_error' };
+        const aiResult = await requestAIStream('debug', debugPayload);
         if (aiResult.error) throw new Error(aiResult.error);
         code = aiResult.code;
         checkCancelled();
@@ -654,11 +757,13 @@ async function autoSolve() {
         updateRetryCount(currentRetry);
         if (currentRetry >= maxRetries) {
           updateStatus(`❌ 题目 ${getCurrentProblemIndex()} 重试用尽，跳过`);
+          const skipped = await skipCurrentProblem(currentProblemId);
           currentProblemId = null;
           currentRetry = 0;
           code = null;
           problem = null;
           showUnACProblems();
+          if (skipped) return;
           continue;
         }
         updateStatus('🤖 AI 修复代码中...');
@@ -684,7 +789,7 @@ async function autoSolve() {
 
       if (submitResult.error) {
         updateStatus(`⚠️ 提交异常: ${submitResult.error}`);
-        sessionStorage.removeItem('pta-auto-solve');
+        clearAutoSolveNavigation();
         isRunning = false;
         break;
       }
@@ -692,6 +797,27 @@ async function autoSolve() {
       if (submitResult.passed) {
         updateStatus(`🎉 AC! 得分 ${submitResult.score?.earned}/${submitResult.score?.total}`);
         showACAnimation();
+        const acceptedProblemId = currentProblemId;
+        const acceptedStatus = await waitForStatus(acceptedProblemId, 'accepted');
+        if (!acceptedStatus) {
+          const problemsAfterAccepted = await waitForProblemStatuses();
+          const nextAfterAccepted = findNextUnACProblem(problemsAfterAccepted);
+          if (nextAfterAccepted && nextAfterAccepted.problemId !== acceptedProblemId) {
+            updateStatus(`⚠️ 已提交正确，状态同步超时，先跳转至题目 ${nextAfterAccepted.num}...`);
+            markAutoSolveNavigation(nextAfterAccepted.problemId);
+            goToProblem(nextAfterAccepted.problemId);
+            return;
+          }
+          if (problemsAfterAccepted.length === 0) {
+            updateStatus('⚠️ 题目列表加载超时，稍后重试');
+            await sleep(2000);
+            continue;
+          }
+          updateStatus('🎉 全部题目已完成！');
+          clearAutoSolveNavigation();
+          isRunning = false;
+          break;
+        }
         currentRetry = 0;
         apiRetry = 0;
         code = null;
@@ -709,11 +835,13 @@ async function autoSolve() {
 
         if (currentRetry >= maxRetries) {
           updateStatus(`❌ 题目 ${getCurrentProblemIndex()} 重试用尽，跳过`);
+          const skipped = await skipCurrentProblem(currentProblemId);
           currentProblemId = null;
           currentRetry = 0;
           code = null;
           problem = null;
           showUnACProblems();
+          if (skipped) return;
           continue;
         }
 
@@ -729,7 +857,7 @@ async function autoSolve() {
     } catch (err) {
       if (err.message === '任务已停止') {
         updateStatus('⏹ 已停止');
-        sessionStorage.removeItem('pta-auto-solve');
+        clearAutoSolveNavigation();
         isRunning = false;
         break;
       }
@@ -742,13 +870,13 @@ async function autoSolve() {
           continue;
         } else {
           updateStatus(`❌ API 连续 ${maxApiRetries} 次失败，停止`);
-          sessionStorage.removeItem('pta-auto-solve');
+          clearAutoSolveNavigation();
           isRunning = false;
         }
       }
       updateStatus(`⚠️ 错误: ${err.message}`);
       console.error('[PTA Auto Solver]', err);
-      sessionStorage.removeItem('pta-auto-solve');
+      clearAutoSolveNavigation();
       isRunning = false;
     }
   }
@@ -794,24 +922,20 @@ async function runHintMode() {
       updateStatus('📋 检测到已有代码，直接测试');
     }
 
-    updateStatus('🔍 检查编译输出...');
-    const compiler = checkCompilerOutput();
-    if (compiler.hasError) {
-      updateStatus(`🔧 编译错误: ${compiler.output}`);
-      updateStatus('🤖 AI 分析错误点和建议...');
-      clearCodeDisplay();
-      const aiResult = await requestHintStream({ code, problem, error: compiler.output, errorType: 'compile' });
-      if (aiResult.error) throw new Error(aiResult.error);
-      updateStatus(`💡 错误分析完成，请查看代码面板`);
-      isRunning = false;
-      return;
-    }
-
     updateStatus('🧪 运行测试...');
     const testResult = await waitForTestResult();
 
     if (testResult.error) {
       updateStatus(`⚠️ 测试异常: ${testResult.error}`);
+      const compiler = checkCompilerOutput();
+      if (compiler.hasError) {
+        updateStatus(`🔧 编译错误: ${compiler.output}`);
+        updateStatus('🤖 AI 分析错误点和建议...');
+        clearCodeDisplay();
+        const aiResult = await requestHintStream({ code, problem, error: compiler.output, errorType: 'compile' });
+        if (aiResult.error) throw new Error(aiResult.error);
+        updateStatus(`💡 错误分析完成，请查看代码面板`);
+      }
       isRunning = false;
       return;
     }
@@ -965,7 +1089,7 @@ function injectPanel() {
         <path d="M46 30 L52 24 L58 30 L52 36 Z" fill="url(#fx-g)"/>
         <text x="72" y="38" font-family="'PingFang SC','Microsoft YaHei',sans-serif" font-size="22" font-weight="700" fill="url(#fx-g)">枫璇科技</text>
       </svg>
-      <span class="version-badge">v3.0</span>
+      <span class="version-badge">v3.0.1</span>
     </div>
     <div class="title" id="pta-title">
       🤖 PTA Auto Solver
@@ -1084,11 +1208,13 @@ function injectPanel() {
   document.getElementById('pta-stop').onclick = () => {
     isRunning = false;
     hintMode = false;
-    sessionStorage.removeItem('pta-auto-solve');
+    clearAutoSolveNavigation();
     updateStatus('⏹ 已停止');
   };
 
   document.getElementById('pta-next').onclick = () => {
+    clearAutoSolveNavigation();
+    isRunning = false;
     const next = findNextUnACProblem();
     if (next) goToProblem(next.problemId);
   };
@@ -1190,7 +1316,17 @@ function updateProblemInfo(index) {
 function init() {
   injectPanel();
   showUnACProblems();
-  if (sessionStorage.getItem('pta-auto-solve') === 'running') {
+  const autoSolveState = sessionStorage.getItem(AUTO_SOLVE_SESSION_KEY);
+  const expectedTarget = sessionStorage.getItem(AUTO_SOLVE_TARGET_KEY);
+  const currentProblemId = getCurrentProblemIdFromUrl();
+
+  if (autoSolveState === AUTO_SOLVE_NAVIGATING && expectedTarget && expectedTarget !== currentProblemId) {
+    clearAutoSolveNavigation();
+    return;
+  }
+
+  if (autoSolveState === AUTO_SOLVE_RUNNING || autoSolveState === AUTO_SOLVE_NAVIGATING) {
+    markAutoSolveRunning();
     updateStatus('🔄 页面跳转，自动恢复运行...');
     setTimeout(() => autoSolve(), 2000);
   }
